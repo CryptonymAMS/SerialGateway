@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# pyinstaller 构建产物
+build/
+dist/
+*.spec
+
+# 运行时数据(profile 等)
+data/
+
+# IDE / 系统
+.DS_Store
+.vscode/
+.idea/
+
+#claude
+.claude

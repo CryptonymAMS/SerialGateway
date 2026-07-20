@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "serial-gateway"
+version = "0.1.0"
+description = "Cross-platform serial port gateway with WebUI + MCP (Python)"
+requires-python = ">=3.10"
+dependencies = [
+  "pyserial>=3.5",
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+  "websockets>=12",
+  "mcp>=1.2",
+]
+
+[project.scripts]
+serial-gateway = "serial_gateway.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+serial_gateway = ["static/**/*"]

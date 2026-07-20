@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Serial Gateway</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css"/>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;font-family:system-ui,'Segoe UI',Roboto,sans-serif;font-size:14px}
+.app{display:flex;flex-direction:column;height:100vh}
+.topbar{background:#1f2937;color:#fff;padding:8px 16px;font-weight:600}
+.main{display:flex;flex:1;min-height:0}
+.sidebar{width:300px;border-right:1px solid #e5e7eb;overflow:auto;padding:8px;background:#fafafa;flex-shrink:0}
+.section{font-weight:600;margin:8px 4px 4px;font-size:13px;color:#374151}
+.cfg{padding:6px 8px;display:flex;flex-direction:column;gap:6px}
+.cfg select{padding:3px 6px;font-size:12px;border:1px solid #d1d5db;border-radius:3px;background:#fff}
+.item{padding:6px 8px;border-bottom:1px solid #f0f0f0;display:flex;flex-direction:column;gap:2px}
+.item-row{display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap}
+.item-sub{font-size:11px;color:#6b7280;word-break:break-all}
+.btn{padding:2px 10px;font-size:12px;cursor:pointer;border:1px solid #d1d5db;background:#fff;border-radius:3px}
+.btn:disabled{color:#999;cursor:not-allowed;background:#f3f4f6}
+.btn-primary{background:#2563eb;color:#fff;border-color:#2563eb}
+.btn-danger{color:#dc2626}
+.center{flex:1;display:flex;flex-direction:column;min-width:0}
+.tabs{display:flex;align-items:center;background:#f3f4f6;border-bottom:1px solid #e5e7eb;padding:4px 8px;gap:4px;min-height:34px;overflow-x:auto;flex-shrink:0}
+.tab{padding:3px 10px;background:#fff;border:1px solid #d1d5db;border-radius:4px;cursor:pointer;font-size:12px;white-space:nowrap}
+.tab.active{background:#2563eb;color:#fff;border-color:#2563eb}
+.tab .x{margin-left:6px;color:#999;cursor:pointer;font-weight:bold}
+.term-area{flex:1;background:#000;position:relative;min-height:0}
+.term-host{position:absolute;inset:0}
+.placeholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#6b7280}
+.inputbar{display:flex;gap:6px;padding:6px;border-top:1px solid #374151;background:#1f2937;align-items:center;flex-shrink:0}
+.inputbar input{flex:1;padding:4px 8px;border:1px solid #4b5563;background:#111827;color:#eee;border-radius:3px;font-family:monospace;font-size:13px}
+.statusbar{background:#f3f4f6;padding:4px 12px;font-size:12px;color:#374151;display:flex;gap:12px;border-top:1px solid #e5e7eb;align-items:center;flex-wrap:wrap;flex-shrink:0}
+.tag{font-size:11px;padding:1px 6px;border-radius:8px}
+.online{background:#d1fae5;color:#065f46}
+.offline{background:#f3f4f6;color:#6b7280}
+.hint{color:#9ca3af}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">📡 Serial Gateway</div>
+  <div class="main">
+    <div class="sidebar">
+      <div class="section">连接配置</div>
+      <div class="cfg">
+        <div><label style="font-size:12px">波特率 </label>
+          <select id="baudrate">
+            <option>1200</option><option>4800</option><option>9600</option>
+            <option>19200</option><option>38400</option><option>57600</option>
+            <option selected>115200</option><option>230400</option>
+            <option>460800</option><option>921600</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:6px;font-size:12px">
+          <label>数据位 <select id="bytesize" style="font-size:11px"><option value="8" selected>8</option><option value="7">7</option><option value="6">6</option><option value="5">5</option></select></label>
+          <label>校验 <select id="parity" style="font-size:11px"><option value="N" selected>N</option><option value="O">O</option><option value="E">E</option></select></label>
+          <label>停止 <select id="stopbits" style="font-size:11px"><option value="1" selected>1</option><option value="2">2</option></select></label>
+        </div>
+        <button class="btn" id="saveCurrentBtn" style="margin-top:2px">＋ 保存当前连接为常用</button>
+      </div>
+      <div class="section">设备库(常用)</div>
+      <div id="profiles"><div class="item-sub">加载中…</div></div>
+      <div class="section">可用端口</div>
+      <div id="ports"><div class="item-sub">加载中…</div></div>
+    </div>
+    <div class="center">
+      <div class="tabs" id="tabs"></div>
+      <div class="term-area">
+        <div class="term-host" id="term-host"></div>
+        <div class="placeholder" id="placeholder">从左侧选择一个串口打开</div>
+      </div>
+      <div class="inputbar" id="inputbar" style="display:none">
+        <select id="sendMode" class="btn"><option value="text">文本</option><option value="hex">十六进制</option></select>
+        <input id="input" placeholder="输入框模式:输入内容回车发送"/>
+        <button id="crlf" class="btn">CRLF</button>
+        <button id="send" class="btn btn-primary">发送</button>
+      </div>
+    </div>
+  </div>
+  <div class="statusbar">
+    <span>输入模式:</span>
+    <select id="inputMode" class="btn">
+      <option value="terminal">终端直连(Tab 补全)</option>
+      <option value="inputbar">输入框</option>
+    </select>
+    <span id="ws-status">WS: 连接中…</span>
+    <span id="ai-status">AI: 空闲</span>
+    <span id="err-status" style="color:#dc2626"></span>
+    <span id="mode-hint" class="hint"></span>
+  </div>
+</div>
+<script>
+const clientId = localStorage.getItem('sg_client_id') || (() => {
+  const id = (crypto.randomUUID ? crypto.randomUUID() : 'c-' + Date.now());
+  localStorage.setItem('sg_client_id', id); return id;
+})();
+let ws = null, ports = [], profiles = [];
+let tabs = [], activeTab = null;
+let terms = {};      // port -> {term, fit, host, dataDisp}
+let listeners = {};  // port -> cb
+let crlfOn = true;
+let lastAi = 0;
+// 默认终端直连;优先级:URL ?mode= > localStorage > 默认 terminal
+const _urlMode = new URLSearchParams(location.search).get('mode');
+let inputMode = _urlMode === 'inputbar' || _urlMode === 'terminal'
+  ? _urlMode
+  : (localStorage.getItem('sg_input_mode') || 'terminal');
+
+const $ = id => document.getElementById(id);
+function setWs(t){ $('ws-status').textContent = 'WS: ' + t; }
+function setErr(t){ $('err-status').textContent = t || ''; }
+function setHint(t){ $('mode-hint').textContent = t || ''; }
+function escapeHtml(s){ return String(s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// 从侧栏控件读当前串口配置
+function currentConfig() {
+  return {
+    baudrate: parseInt($('baudrate').value, 10),
+    bytesize: parseInt($('bytesize').value, 10),
+    parity: $('parity').value,
+    stopbits: parseFloat($('stopbits').value),
+    xonxoff: false, rtscts: false,
+  };
+}
+
+function connect() {
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss' : 'ws') + '://' + location.host + '/ws');
+  ws.onopen = () => { setWs('已连接'); refresh(); };
+  ws.onclose = () => { setWs('断开,重连…'); setTimeout(connect, 2000); };
+  ws.onerror = () => ws.close();
+  ws.onmessage = (e) => {
+    let m; try { m = JSON.parse(e.data); } catch { return; }
+    if (m.type === 'data' && m.source && m.source.indexOf('client:mcp') === 0) lastAi = Date.now();
+    if (m.port && listeners[m.port]) listeners[m.port](m);
+  };
+}
+
+async function refresh() {
+  try {
+    ports = await (await fetch('/api/ports')).json();
+    profiles = await (await fetch('/api/profiles')).json();
+    renderSidebar(); setErr('');
+  } catch (e) { setErr('刷新失败: ' + e); }
+}
+
+function isOnline(p) {
+  const f = p.fingerprint || {};
+  return ports.some(x => x.usb && x.usb.vid === f.vid && x.usb.pid === f.pid && x.usb.serial_number === f.serial_number);
+}
+function portForProfile(p) {
+  const f = p.fingerprint || {};
+  if (f.vid) {
+    const exact = ports.find(x => x.usb && x.usb.vid === f.vid && x.usb.pid === f.pid && x.usb.serial_number === f.serial_number);
+    if (exact) return exact.name;
+    const vp = ports.find(x => x.usb && x.usb.vid === f.vid && x.usb.pid === f.pid);
+    if (vp) return vp.name;
+  }
+  return p.last_port_name || null;
+}
+
+function renderSidebar() {
+  // profiles(常用)+ 删除按钮
+  const pe = $('profiles');
+  if (!profiles.length) pe.innerHTML = '<div class="item-sub">暂无常用设备(用上方按钮保存)</div>';
+  else pe.innerHTML = profiles.map(p => {
+    const on = isOnline(p);
+    const sub = (p.fingerprint && p.fingerprint.serial_number) || (p.fingerprint && p.fingerprint.vid ? ('vid:' + p.fingerprint.vid) : '') || p.last_port_name || '';
+    const cfgTxt = p.config ? (p.config.baudrate + ' ' + (p.config.bytesize||8) + (p.config.parity||'N') + (p.config.stopbits||1)) : '';
+    return `<div class="item"><div class="item-row">
+      <span class="tag ${on?'online':'offline'}">${on?'在线':'离线'}</span>
+      <span style="flex:1">${escapeHtml(p.alias)}</span>
+      <button class="btn btn-primary" ${on?'':'disabled'} onclick="openProfile('${p.id}')">连接</button>
+      <button class="btn btn-danger" onclick="deleteProfile('${p.id}')">删除</button>
+    </div><div class="item-sub">${escapeHtml(sub)} · ${escapeHtml(cfgTxt)}</div></div>`;
+  }).join('');
+  // ports
+  const pe2 = $('ports');
+  if (!ports.length) pe2.innerHTML = '<div class="item-sub">未发现串口</div>';
+  else pe2.innerHTML = ports.map(p => `<div class="item"><div class="item-row">
+    <span>${escapeHtml(p.name)}</span>
+    <button class="btn" onclick="openSession('${escapeHtml(p.name)}')">打开</button>
+  </div><div class="item-sub">${escapeHtml(p.usb ? (p.usb.product || p.description || '') : (p.description||''))}</div></div>`).join('');
+}
+
+async function openSession(port, config) {
+  if (tabs.indexOf(port) < 0) tabs.push(port);
+  ensureTerm(port);
+  setActive(port);
+  applyInputMode();
+  // 兜底:下一帧再确保一次(规避 ensureTerm/渲染时序导致 inputbar 未刷新)
+  requestAnimationFrame(() => { setActive(port); applyInputMode(); });
+  if (ws.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'subscribe', port, client: clientId, config: config || currentConfig() }));
+    try {
+      const entries = await (await fetch('/api/sessions/' + encodeURIComponent(port) + '/log?count=200')).json();
+      entries.forEach(e => writeEvent(port, e));
+    } catch {}
+  }
+}
+
+async function openProfile(pid) {
+  const p = profiles.find(x => x.id === pid); if (!p) return;
+  const port = portForProfile(p);
+  if (!port) { setErr('设备未连接'); return; }
+  await openSession(port, p.config || currentConfig());
+}
+
+async function saveCurrent() {
+  if (!activeTab) { setErr('请先打开一个串口'); return; }
+  const alias = prompt('为该连接起个名字:', activeTab);
+  if (!alias) return;
+  const p = ports.find(x => x.name === activeTab);
+  const fp = (p && p.usb) ? { vid: p.usb.vid, pid: p.usb.pid, serial_number: p.usb.serial_number || null }
+                          : { vid: 0, pid: 0, serial_number: null };
+  const profile = { alias, config: currentConfig(), fingerprint: fp, last_port_name: activeTab };
+  try {
+    await fetch('/api/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(profile) });
+    setErr(''); await refresh();
+  } catch (e) { setErr('保存失败: ' + e); }
+}
+
+async function deleteProfile(pid) {
+  if (!confirm('删除该常用连接?')) return;
+  try {
+    await fetch('/api/profiles/' + encodeURIComponent(pid), { method: 'DELETE' });
+    await refresh();
+  } catch (e) { setErr('删除失败: ' + e); }
+}
+
+function ensureTerm(port) {
+  if (terms[port]) return;
+  const host = document.createElement('div');
+  host.style.cssText = 'position:absolute;inset:0;padding:4px;display:none';
+  $('term-host').appendChild(host);
+  const term = new Terminal({
+    scrollback: 5000, fontSize: 13, convertEol: false,
+    fontFamily: 'ui-monospace,Consolas,Menlo,monospace', tabStopWidth: 8,
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  try { term.open(host); } catch (e) { console.error('term.open failed', e); }
+  try { fit.fit(); } catch (e) {}
+  terms[port] = { term, fit, host, dataDisp: null };
+  listeners[port] = (m) => { if (m.type === 'data') writeEvent(port, m); };
+}
+
+// 输入模式切换
+function applyInputMode() {
+  // 解除所有终端 onData
+  Object.values(terms).forEach(t => {
+    if (t.dataDisp) { t.dataDisp.dispose(); t.dataDisp = null; }
+  });
+  const showBar = (inputMode === 'inputbar' && activeTab);
+  $('inputbar').style.display = showBar ? 'flex' : 'none';
+  console.log('applyInputMode', { inputMode, activeTab, showBar, display: $('inputbar').style.display });
+  if (inputMode === 'terminal' && activeTab) {
+    const t = terms[activeTab];
+    if (t) {
+      t.dataDisp = t.term.onData(data => {
+        if (ws.readyState === 1) {
+          // 原样发送(含 \r \t \x03),交给设备 shell(回显/补全/信号)
+          ws.send(JSON.stringify({ type: 'write', port: activeTab, client: clientId, data_b64: btoa(data) }));
+        }
+      });
+      setHint('终端直连:键盘直接发设备(Tab=补全, Ctrl+C=中断)');
+    }
+  } else if (inputMode === 'inputbar') {
+    setHint('输入框:回车发送(文本/十六进制, 可切 CRLF)');
+  } else {
+    setHint('');
+  }
+}
+$('inputMode').addEventListener('change', function(){ inputMode = this.value; localStorage.setItem('sg_input_mode', inputMode); applyInputMode(); });
+// 同步 select 值
+$('inputMode').value = inputMode;
+
+function writeEvent(port, e) {
+  const t = terms[port]; if (!t) return;
+  if (inputMode === 'terminal') {
+    // 终端直连:只写设备回显(rx),忽略 tx(用户输入,设备会 echo)
+    if (e.dir === 'rx') {
+      t.term.write(atob(e.data_b64 || ''));
+    }
+  } else {
+    // 输入框模式:每条事件加来源标注 + 换行
+    t.term.write(prefix(e.dir, e.source));
+    t.term.write(atob(e.data_b64 || ''));
+    t.term.write('\r\n');
+  }
+}
+function prefix(dir, source) {
+  if (dir === 'rx') return '\x1b[36m[设备]\x1b[0m ';
+  if (source && source.indexOf('client:mcp') === 0) return '\x1b[35m[AI]\x1b[0m ';
+  if (dir === 'tx') return '\x1b[33m[人工]\x1b[0m ';
+  return '';
+}
+
+function setActive(port) {
+  activeTab = port;
+  $('placeholder').style.display = port ? 'none' : 'flex';
+  Object.keys(terms).forEach(p => {
+    terms[p].host.style.display = (p === port) ? 'block' : 'none';
+    if (p === port) { try { terms[p].fit.fit(); } catch {} }
+  });
+  renderTabs();
+  applyInputMode();
+}
+function renderTabs() {
+  $('tabs').innerHTML = tabs.map(p =>
+    `<div class="tab ${p===activeTab?'active':''}" onclick="setActive('${escapeHtml(p)}')">${escapeHtml(p)}<span class="x" onclick="event.stopPropagation();closeTab('${escapeHtml(p)}')">×</span></div>`
+  ).join('');
+}
+function closeTab(port) {
+  if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'unsubscribe', port, client: clientId }));
+  tabs = tabs.filter(t => t !== port);
+  if (terms[port]) { terms[port].term.dispose(); terms[port].host.remove(); delete terms[port]; delete listeners[port]; }
+  setActive(tabs[tabs.length - 1] || null);
+}
+
+function doSend() {
+  if (!activeTab || ws.readyState !== 1) return;
+  const inp = $('input'); const mode = $('sendMode').value;
+  let bytes;
+  if (mode === 'text') {
+    let text = inp.value;
+    if (crlfOn) text += '\r\n';
+    bytes = new TextEncoder().encode(text);
+  } else {
+    const hex = inp.value.replace(/\s+/g, ''); const arr = [];
+    for (let i = 0; i + 1 < hex.length; i += 2) arr.push(parseInt(hex.substr(i, 2), 16));
+    bytes = new Uint8Array(arr);
+  }
+  ws.send(JSON.stringify({ type: 'write', port: activeTab, client: clientId, data_b64: btoa(String.fromCharCode.apply(null, bytes)) }));
+  inp.value = '';
+}
+
+$('send').onclick = doSend;
+$('input').addEventListener('keydown', e => { if (e.key === 'Enter') doSend(); });
+$('crlf').onclick = function(){ crlfOn = !crlfOn; this.classList.toggle('btn-primary', crlfOn); };
+$('crlf').classList.toggle('btn-primary', crlfOn);
+$('saveCurrentBtn').onclick = saveCurrent;
+// 配置(波特率等)变化时,若已有打开的端口,重新 subscribe 触发后端重开应用新配置
+['baudrate','bytesize','parity','stopbits'].forEach(id => $(id).addEventListener('change', () => {
+  if (activeTab && ws.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'subscribe', port: activeTab, client: clientId, config: currentConfig() }));
+    setHint('配置已变更,重开串口应用中…');
+  }
+}));
+window.addEventListener('resize', () => { Object.values(terms).forEach(t => { try { t.fit.fit(); } catch {} }); });
+
+setInterval(() => {
+  $('ai-status').textContent = 'AI: ' + (Date.now() - lastAi < 5000 ? '活跃' : '空闲');
+}, 1000);
+
+window.openSession = openSession; window.openProfile = openProfile;
+window.setActive = setActive; window.closeTab = closeTab;
+window.deleteProfile = deleteProfile;
+connect();
+</script>
+</body>
+</html>
