@@ -111,3 +111,24 @@ ERROR: serial-gateway 已在运行 (PID 12345)。
 ## 芯片兼容
 
 CH340 / CH342 / CH343 / PL2303 / CP210x / CDC-ACM — 全部已验证(Windows/macOS/Linux)。
+
+## 卸载
+
+```bash
+# 停止进程
+kill $(cat /tmp/serial-gateway.pid 2>/dev/null)        # Linux/macOS
+taskkill /f /pid $(type C:\Users\%USERNAME%\AppData\Local\Temp\serial-gateway.pid)  # Windows
+
+# pip 方式:卸载包 + 删源码
+pip uninstall serial-gateway
+rm -rf <项目目录>
+
+# 单文件方式:删二进制
+rm dist/serial-gateway
+
+# 清理运行时数据(可选)
+rm -rf data/
+
+# 移除 Claude Code MCP 配置
+claude mcp remove serial
+```
