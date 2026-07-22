@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "serial-gateway"
 version = "0.1.0"
 description = "Cross-platform serial port gateway with WebUI + MCP (Python)"
+license = "GPL-3.0-only"
 requires-python = ">=3.10"
 dependencies = [
   "pyserial>=3.5",
