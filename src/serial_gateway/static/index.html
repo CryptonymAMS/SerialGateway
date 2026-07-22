@@ -253,19 +253,16 @@ function ensureTerm(port) {
 
 // 输入模式切换
 function applyInputMode() {
-  // 解除所有终端 onData
   Object.values(terms).forEach(t => {
     if (t.dataDisp) { t.dataDisp.dispose(); t.dataDisp = null; }
   });
   const showBar = (inputMode === 'inputbar' && activeTab);
   $('inputbar').style.display = showBar ? 'flex' : 'none';
-  console.log('applyInputMode', { inputMode, activeTab, showBar, display: $('inputbar').style.display });
   if (inputMode === 'terminal' && activeTab) {
     const t = terms[activeTab];
     if (t) {
       t.dataDisp = t.term.onData(data => {
         if (ws.readyState === 1) {
-          // 原样发送(含 \r \t \x03),交给设备 shell(回显/补全/信号)
           ws.send(JSON.stringify({ type: 'write', port: activeTab, client: clientId, data_b64: btoa(data) }));
         }
       });
@@ -284,12 +281,10 @@ $('inputMode').value = inputMode;
 function writeEvent(port, e) {
   const t = terms[port]; if (!t) return;
   if (inputMode === 'terminal') {
-    // 终端直连:只写设备回显(rx),忽略 tx(用户输入,设备会 echo)
     if (e.dir === 'rx') {
       t.term.write(atob(e.data_b64 || ''));
     }
   } else {
-    // 输入框模式:每条事件加来源标注 + 换行
     t.term.write(prefix(e.dir, e.source));
     t.term.write(atob(e.data_b64 || ''));
     t.term.write('\r\n');

@@ -137,30 +137,30 @@ class SerialSession:
         stop_pattern: str | None = None,
         timeout_ms: int = 2000,
     ) -> bytes:
-        # 整个 send + wait 在锁内,避免并发 send_data 覆盖 _resp_waiter
+        # 发送(锁内,保证命令原子) → 等待响应(锁外,不阻塞其他客户端)
         async with self._op_lock:
             self._serial.write(payload)
             entry = LogEntry("tx", f"client:{source}", time.time(), payload)
             self._push_ring(entry)
             await self._fanout(entry)
 
-            if wait_policy == "none":
-                return b""
+        if wait_policy == "none":
+            return b""
 
-            regex = None
-            if wait_policy == "keyword" and stop_pattern:
-                regex = re.compile(stop_pattern)
-            elif wait_policy == "at_command":
-                regex = re.compile(r"\b(OK|ERROR)\b")
+        regex = None
+        if wait_policy == "keyword" and stop_pattern:
+            regex = re.compile(stop_pattern)
+        elif wait_policy == "at_command":
+            regex = re.compile(r"\b(OK|ERROR)\b")
 
-            buf = bytearray()
-            fut = self._loop.create_future()
-            self._resp_waiter = (fut, regex, buf)
-            try:
-                return await asyncio.wait_for(fut, max(timeout_ms, 1) / 1000)
-            except asyncio.TimeoutError:
-                self._resp_waiter = None
-                return bytes(buf)
+        buf = bytearray()
+        fut = self._loop.create_future()
+        self._resp_waiter = (fut, regex, buf)
+        try:
+            return await asyncio.wait_for(fut, max(timeout_ms, 1) / 1000)
+        except asyncio.TimeoutError:
+            self._resp_waiter = None
+            return bytes(buf)
 
     async def read_urc(self) -> list[bytes]:
         items = list(self._urc)

@@ -125,11 +125,18 @@ def create_app(cfg: Config) -> FastAPI:
                 pass
         finally:
             sender.cancel()
+            affected = set()
             for cid, (name, task) in list(subs.items()):
                 task.cancel()
                 s = app.state.manager.get(name)
                 if s:
                     await s.unsubscribe(cid)
+                    affected.add(name)
+            # 仅当某端口的所有订阅者都离开后,才关闭 session(释放串口)
+            for port in affected:
+                s = app.state.manager.get(port)
+                if s and len(s.subscriber_ids) == 0:
+                    await app.state.manager.close(port)
 
     # ---- MCP 挂载(FastMCP 内部 route 为 /mcp,挂根) ----
     if mcp_app is not None:
@@ -209,6 +216,9 @@ async def _handle_ws_msg(app: FastAPI, msg: dict, out: asyncio.Queue, subs: dict
         s = app.state.manager.get(port)
         if s:
             await s.unsubscribe(client)
+            # 仅当该端口无任何订阅者时关闭 session(释放串口)
+            if len(s.subscriber_ids) == 0:
+                await app.state.manager.close(port)
         if client in subs:
             _, task = subs.pop(client)
             task.cancel()
