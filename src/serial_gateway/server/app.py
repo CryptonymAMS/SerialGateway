@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from .. import ports as ports_mod
 from ..config import Config, SerialConfig
 from ..profile import ProfileStore
-from ..session import SessionManager
+from ..session import ConfigConflictError, SessionManager
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
@@ -79,7 +79,17 @@ def create_app(cfg: Config) -> FastAPI:
     async def open_session(req: dict):
         name = req["port"]
         sc = SerialConfig.from_dict(req.get("config"))
-        await app.state.manager.open_or_get(name, sc)
+        try:
+            await app.state.manager.open_or_get(name, sc)
+        except ConfigConflictError as ce:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "config_conflict",
+                    "message": f"端口 {name} 已被以其他配置打开(先来后到)",
+                    "current_config": ce.current_config.to_dict(),
+                },
+            )
         return {"session_id": name}
 
     @app.delete("/api/sessions/{sid}")
@@ -166,7 +176,18 @@ async def _handle_ws_msg(app: FastAPI, msg: dict, out: asyncio.Queue, subs: dict
         port = msg["port"]
         client = msg["client"]
         sc = SerialConfig.from_dict(msg.get("config"))
-        s = await app.state.manager.open_or_get(port, sc)
+        try:
+            s = await app.state.manager.open_or_get(port, sc)
+        except ConfigConflictError as ce:
+            # 先来后到:已有客户端以其他配置打开,告知前端当前配置让其沿用
+            await out.put(
+                {
+                    "type": "config_conflict",
+                    "port": port,
+                    "current_config": ce.current_config.to_dict(),
+                }
+            )
+            return
         if client in subs:
             old_name, old_task = subs.pop(client)
             old_task.cancel()
@@ -183,6 +204,9 @@ async def _handle_ws_msg(app: FastAPI, msg: dict, out: asyncio.Queue, subs: dict
             try:
                 while True:
                     entry = await q.get()
+                    if entry is None:  # 哨兵:session 已关闭
+                        await out.put({"type": "session_closed", "port": port})
+                        break
                     await out.put(
                         {
                             "type": "data",

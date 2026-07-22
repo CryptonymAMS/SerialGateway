@@ -138,7 +138,13 @@ function connect() {
   ws.onmessage = (e) => {
     let m; try { m = JSON.parse(e.data); } catch { return; }
     if (m.type === 'data' && m.source && m.source.indexOf('client:mcp') === 0) lastAi = Date.now();
-    if (m.port && listeners[m.port]) listeners[m.port](m);
+    switch (m.type) {
+      case 'config_conflict': handleConfigConflict(m); break;
+      case 'session_closed': handleSessionClosed(m); break;
+      case 'error': setErr(m.message || '错误'); break;
+      default:
+        if (m.port && listeners[m.port]) listeners[m.port](m);
+    }
   };
 }
 
@@ -314,6 +320,33 @@ function renderTabs() {
 }
 function closeTab(port) {
   if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'unsubscribe', port, client: clientId }));
+  tabs = tabs.filter(t => t !== port);
+  if (terms[port]) { terms[port].term.dispose(); terms[port].host.remove(); delete terms[port]; delete listeners[port]; }
+  setActive(tabs[tabs.length - 1] || null);
+}
+
+// 服务端告知:该串口已被其他客户端以不同配置打开(先来后到)
+function handleConfigConflict(m) {
+  const cur = m.current_config || {};
+  const cfgTxt = (cur.baudrate || 115200) + ' ' + (cur.bytesize || 8) + (cur.parity || 'N') + (cur.stopbits || 1);
+  setErr('');
+  // 同步侧栏下拉框到服务端当前配置,避免再次冲突
+  if (cur.baudrate) $('baudrate').value = String(cur.baudrate);
+  if (cur.bytesize) $('bytesize').value = String(cur.bytesize);
+  if (cur.parity) $('parity').value = cur.parity;
+  if (cur.stopbits) $('stopbits').value = String(cur.stopbits);
+  if (confirm('串口 ' + m.port + ' 已被以 ' + cfgTxt + ' 打开。\n(多客户端共享同一串口时遵循「先来后到」,后到者沿用既有配置)\n点击「确定」沿用现有配置连接,或「取消」放弃。')) {
+    openSession(m.port, cur);
+  } else {
+    setErr('串口 ' + m.port + ' 已被占用,当前配置=' + cfgTxt + '。已取消连接。');
+  }
+}
+
+// 服务端告知:会话已被关闭(配置被重置或全部订阅者已离开)
+function handleSessionClosed(m) {
+  setErr('串口 ' + m.port + ' 会话已被服务端关闭(可能配置被重置或全部连接已断开)。');
+  const port = m.port;
+  if (tabs.indexOf(port) < 0) return;
   tabs = tabs.filter(t => t !== port);
   if (terms[port]) { terms[port].term.dispose(); terms[port].host.remove(); delete terms[port]; delete listeners[port]; }
   setActive(tabs[tabs.length - 1] || null);

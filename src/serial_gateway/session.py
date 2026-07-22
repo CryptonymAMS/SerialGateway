@@ -2,6 +2,14 @@
 
 替代 pyserial-asyncio(后者在 Windows 上对 COM 端口支持不稳定)。
 后台读线程 → run_coroutine_threadsafe → asyncio 事件循环,线程安全桥接。
+
+并发安全要点:
+- pyserial 的 Serial 对象非线程安全。读线程与事件循环线程(write/configure/close)
+  通过 `self._serial_lock` 互斥访问底层串口。
+- 所有同步阻塞调用(serial.write / thread.join)一律下沉到 executor,
+  避免钉死 asyncio 事件循环(否则一个慢写会冻结所有客户端)。
+- 多客户端共享串口时遵循「先来后到」:已有订阅者则以既有配置为准,
+  拒绝不同配置的后来者(ConfigConflictError),杜绝配置乒乓互相踢人。
 """
 from __future__ import annotations
 
@@ -16,6 +24,9 @@ from dataclasses import dataclass
 import serial
 
 from .config import SerialConfig
+
+# 同步写串口的兜底超时(秒)。配合 executor,确保设备不消费数据时不会永久阻塞。
+_WRITE_TIMEOUT = 2.0
 
 
 @dataclass
@@ -34,6 +45,18 @@ class LogEntry:
         }
 
 
+class ConfigConflictError(Exception):
+    """已有客户端以不同配置打开该串口(先来后到,拒绝配置乒乓)。"""
+
+    def __init__(self, name: str, current_config: SerialConfig):
+        self.name = name
+        self.current_config = current_config
+        super().__init__(
+            f"port {name} already open with a different config; "
+            f"existing subscribers hold precedence"
+        )
+
+
 class SerialSession:
     """一个物理串口的活跃会话。用 pyserial + 后台线程驱动读写循环。"""
 
@@ -48,6 +71,7 @@ class SerialSession:
         self._resp_waiter: tuple | None = None
         self._urc: collections.deque = collections.deque(maxlen=500)
         self._serial: serial.Serial | None = None
+        self._serial_lock = threading.Lock()  # 保护 _serial 跨线程访问
         self._read_thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._closed = False
@@ -63,6 +87,7 @@ class SerialSession:
             xonxoff=self.config.xonxoff,
             rtscts=self.config.rtscts,
             timeout=0.1,
+            write_timeout=_WRITE_TIMEOUT,  # 设备不消费时 write 不会永久阻塞
         )
         # CH342 等 USB 转串口芯片需 DTR 信号线拉高才正常收发
         try:
@@ -84,17 +109,21 @@ class SerialSession:
     # ---- 后台读线程 ----
 
     def _read_loop(self) -> None:
-        """后台线程:持续读取串口数据,通过 run_coroutine_threadsafe 桥接到 asyncio。"""
+        """后台线程:持续读取串口数据,通过 run_coroutine_threadsafe 桥接到 asyncio。
+
+        访问 _serial 全程持锁,与 write/configure/close 互斥。
+        """
         while not self._closed:
             try:
-                n = self._serial.in_waiting
-                if n:
-                    data = self._serial.read(n)
-                else:
-                    time.sleep(0.01)
-                    continue
+                with self._serial_lock:
+                    if self._closed or self._serial is None:
+                        break
+                    n = self._serial.in_waiting
+                    data = self._serial.read(n) if n else b""
                 if data:
                     asyncio.run_coroutine_threadsafe(self._on_rx(data), self._loop)
+                else:
+                    time.sleep(0.01)
             except Exception as e:
                 if not self._closed:
                     import logging
@@ -122,9 +151,23 @@ class SerialSession:
 
     # ---- 写 ----
 
+    async def _write_raw(self, data: bytes) -> None:
+        """同步串口写入下沉到 executor,避免阻塞事件循环。
+
+        write_timeout 兜底:设备不消费数据时 pyserial 抛 SerialTimeoutException,
+        传播给调用方,而不是永久钉死写线程(进而冻结事件循环)。
+        """
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._do_write, data)
+
+    def _do_write(self, data: bytes) -> None:
+        with self._serial_lock:
+            if self._serial is not None and not self._closed:
+                self._serial.write(data)  # write_timeout 触发时抛 SerialTimeoutException
+
     async def write(self, data: bytes, source: str) -> None:
         async with self._op_lock:
-            self._serial.write(data)
+            await self._write_raw(data)
             entry = LogEntry("tx", f"client:{source}", time.time(), data)
             self._push_ring(entry)
             await self._fanout(entry)
@@ -139,7 +182,7 @@ class SerialSession:
     ) -> bytes:
         # 发送(锁内,保证命令原子) → 等待响应(锁外,不阻塞其他客户端)
         async with self._op_lock:
-            self._serial.write(payload)
+            await self._write_raw(payload)
             entry = LogEntry("tx", f"client:{source}", time.time(), payload)
             self._push_ring(entry)
             await self._fanout(entry)
@@ -180,16 +223,17 @@ class SerialSession:
         self._subs.pop(client_id, None)
 
     async def configure(self, config: SerialConfig) -> None:
-        """应用新串口参数(持锁,重开底层端口)。"""
+        """应用新串口参数(持锁,直接设置已打开端口的参数)。"""
         async with self._op_lock:
             self.config = config
-            if self._serial:
-                self._serial.baudrate = config.baudrate
-                self._serial.bytesize = config.bytesize
-                self._serial.parity = config.parity
-                self._serial.stopbits = config.stopbits
-                self._serial.xonxoff = config.xonxoff
-                self._serial.rtscts = config.rtscts
+            with self._serial_lock:
+                if self._serial:
+                    self._serial.baudrate = config.baudrate
+                    self._serial.bytesize = config.bytesize
+                    self._serial.parity = config.parity
+                    self._serial.stopbits = config.stopbits
+                    self._serial.xonxoff = config.xonxoff
+                    self._serial.rtscts = config.rtscts
 
     def recent_log(self, count: int = 100) -> list[LogEntry]:
         items = list(self._ring)
@@ -210,14 +254,29 @@ class SerialSession:
             self._ring_bytes -= len(old.data)
 
     async def close(self) -> None:
+        """关闭会话。
+
+        - 先向所有订阅者 queue 投递哨兵 None,fwd_task 收到后可优雅退出并发
+          session_closed,避免协程泄漏与「订阅错位」造成的永久挂起。
+        - thread.join 下沉 executor,不阻塞事件循环。
+        """
         self._closed = True
-        if self._read_thread:
-            self._read_thread.join(timeout=2)
-        if self._serial:
+        for q in list(self._subs.values()):
             try:
-                self._serial.close()
-            except Exception:
+                q.put_nowait(None)  # 哨兵
+            except asyncio.QueueFull:
                 pass
+        self._subs.clear()
+        if self._read_thread:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._read_thread.join, 2)
+        with self._serial_lock:
+            if self._serial:
+                try:
+                    self._serial.close()
+                except Exception:
+                    pass
+                self._serial = None
 
 
 class SessionManager:
@@ -233,6 +292,10 @@ class SessionManager:
             existing = self._sessions.get(name)
             if existing is not None and not existing._closed:
                 if existing.config != config:
+                    # 有活跃订阅者:先来后到,拒绝不同配置(防止乒乓互相踢人)
+                    if existing.subscriber_ids:
+                        raise ConfigConflictError(name, existing.config)
+                    # 无订阅者(残留 session):重开以应用新配置
                     await existing.close()
                 else:
                     return existing
