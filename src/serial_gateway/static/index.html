@@ -357,6 +357,8 @@ setInterval(() => {
 window.openSession = openSession; window.openProfile = openProfile;
 window.setActive = setActive; window.closeTab = closeTab;
 window.deleteProfile = deleteProfile;
+// 定时刷新端口列表(检测热插拔),仅刷新端口不影响已打开的终端
+setInterval(refresh, 3000);
 connect();
 </script>
 </body>
